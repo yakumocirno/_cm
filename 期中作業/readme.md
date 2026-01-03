@@ -1,4 +1,4 @@
-# [AI對話]https://chatgpt.com/share/69596b8a-ee30-8005-9fc1-71072a5fbdbf 
+# [AI對話](https://chatgpt.com/share/69596b8a-ee30-8005-9fc1-71072a5fbdbf)
 # 以數值方法求解高次多項式方程式之研究與實作
 
 ## 專題簡介
