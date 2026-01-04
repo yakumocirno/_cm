@@ -1,464 +1,377 @@
+# -*- coding: utf-8 -*-
+"""
+Finite Field GF(p) implementation (p prime)
+- Additive group: (F, +)
+- Multiplicative group: (F\{0}, *)
+- Distributivity: a*(b+c)=a*b+a*c
+
+This file includes:
+- FieldElement with operator overloading
+- FiniteField
+- AddGroup / MulGroup classes
+- group axioms checker
+- field distributivity checker
+- demo usage
+
+Copy & run directly.
+"""
+
 from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import Iterable, Iterator, List, Optional, Union
+from typing import Callable, List, Iterable, Any, Optional
 
 
-def _is_prime(p: int) -> bool:
+# =========================
+# Basic utilities
+# =========================
+
+def is_prime(p: int) -> bool:
     if p <= 1:
         return False
     if p <= 3:
         return True
-    if p % 2 == 0 or p % 3 == 0:
+    if p % 2 == 0:
         return False
-    i = 5
+    i = 3
     while i * i <= p:
-        if p % i == 0 or p % (i + 2) == 0:
+        if p % i == 0:
             return False
-        i += 6
+        i += 2
     return True
 
 
-class FiniteField:
-    """Prime field F_p."""
+def egcd(a: int, b: int):
+    """Extended GCD: returns (g, x, y) s.t. ax + by = g = gcd(a,b)"""
+    x0, y0, x1, y1 = 1, 0, 0, 1
+    while b != 0:
+        q = a // b
+        a, b = b, a - q * b
+        x0, x1 = x1, x0 - q * x1
+        y0, y1 = y1, y0 - q * y1
+    return a, x0, y0
 
+
+def modinv(a: int, p: int) -> int:
+    """Inverse of a mod p (p prime, a != 0 mod p)."""
+    a %= p
+    if a == 0:
+        raise ZeroDivisionError("0 has no multiplicative inverse in a field.")
+    g, x, _ = egcd(a, p)
+    if g != 1:
+        # In GF(p) with prime p and a != 0, gcd must be 1
+        raise ZeroDivisionError(f"{a} has no inverse mod {p} (gcd={g}).")
+    return x % p
+
+
+# =========================
+# Field Element
+# =========================
+
+@dataclass(frozen=True)
+class FieldElement:
+    """An element of GF(p)"""
+    value: int
+    field: "FiniteField"
+
+    def __post_init__(self):
+        object.__setattr__(self, "value", self.value % self.field.p)
+
+    def __int__(self) -> int:
+        return self.value
+
+    def __repr__(self) -> str:
+        return f"{self.value} (mod {self.field.p})"
+
+    def _coerce(self, other: Any) -> "FieldElement":
+        if isinstance(other, FieldElement):
+            if other.field != self.field:
+                raise TypeError("Cannot operate on elements from different fields.")
+            return other
+        if isinstance(other, int):
+            return self.field(other)
+        raise TypeError(f"Unsupported operand type: {type(other)}")
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, FieldElement):
+            return self.field == other.field and self.value == other.value
+        if isinstance(other, int):
+            return self.value == (other % self.field.p)
+        return False
+
+    # ---- addition / subtraction
+    def __add__(self, other: Any) -> "FieldElement":
+        o = self._coerce(other)
+        return self.field(self.value + o.value)
+
+    def __radd__(self, other: Any) -> "FieldElement":
+        return self.__add__(other)
+
+    def __neg__(self) -> "FieldElement":
+        return self.field(-self.value)
+
+    def __sub__(self, other: Any) -> "FieldElement":
+        o = self._coerce(other)
+        return self.field(self.value - o.value)
+
+    def __rsub__(self, other: Any) -> "FieldElement":
+        # other - self
+        o = self._coerce(other)
+        return self.field(o.value - self.value)
+
+    # ---- multiplication / division
+    def __mul__(self, other: Any) -> "FieldElement":
+        o = self._coerce(other)
+        return self.field(self.value * o.value)
+
+    def __rmul__(self, other: Any) -> "FieldElement":
+        return self.__mul__(other)
+
+    def inv(self) -> "FieldElement":
+        if self.value == 0:
+            raise ZeroDivisionError("0 has no multiplicative inverse.")
+        return self.field(modinv(self.value, self.field.p))
+
+    def __truediv__(self, other: Any) -> "FieldElement":
+        o = self._coerce(other)
+        return self * o.inv()
+
+    def __rtruediv__(self, other: Any) -> "FieldElement":
+        # other / self
+        o = self._coerce(other)
+        return o * self.inv()
+
+
+# =========================
+# Finite Field GF(p)
+# =========================
+
+class FiniteField:
     def __init__(self, p: int):
         if not isinstance(p, int):
-            raise TypeError("p must be int")
-        if not _is_prime(p):
-            raise ValueError("For this implementation, p must be prime (GF(p)).")
+            raise TypeError("p must be an int.")
+        if not is_prime(p):
+            raise ValueError("GF(p) requires p to be prime in this implementation.")
         self.p = p
-        self._add_group = FiniteFieldAddGroup(self)
-        self._mul_group = FiniteFieldMulGroup(self)
 
-    def element(self, value: Union[int, 'FFElement']) -> 'FFElement':
-        if isinstance(value, FFElement):
-            if value.field is not self:
-                raise TypeError("Cannot mix elements from different fields")
-            return value
-        if not isinstance(value, int):
-            raise TypeError("Field elements must be created from int or FFElement")
-        return FFElement(self, value % self.p)
+    def __call__(self, x: int) -> FieldElement:
+        if not isinstance(x, int):
+            raise TypeError("Only int can be coerced into GF(p) elements.")
+        return FieldElement(x % self.p, self)
 
-    def __call__(self, value: Union[int, 'FFElement']) -> 'FFElement':
-        return self.element(value)
+    def zero(self) -> FieldElement:
+        return self(0)
 
-    @property
-    def zero(self) -> 'FFElement':
-        return self.element(0)
+    def one(self) -> FieldElement:
+        return self(1)
 
-    @property
-    def one(self) -> 'FFElement':
-        return self.element(1)
+    def elements(self) -> List[FieldElement]:
+        return [self(i) for i in range(self.p)]
 
-    @property
-    def elements(self) -> List['FFElement']:
-        return [self.element(i) for i in range(self.p)]
+    def nonzero_elements(self) -> List[FieldElement]:
+        return [self(i) for i in range(1, self.p)]
 
-    @property
-    def nonzero_elements(self) -> List['FFElement']:
-        return [self.element(i) for i in range(1, self.p)]
-
-    @property
-    def add_group(self) -> 'FiniteFieldAddGroup':
-        return self._add_group
-
-    @property
-    def mul_group(self) -> 'FiniteFieldMulGroup':
-        return self._mul_group
-
-
-class FiniteField:
-    """Prime field F_p."""
-
-    def __init__(self, p: int):
-        if not isinstance(p, int):
-            raise TypeError("p must be int")
-        if not _is_prime(p):
-            raise ValueError("For this implementation, p must be prime (GF(p)).")
-        self.p = p
-        self._add_group = FiniteFieldAddGroup(self)
-        self._mul_group = FiniteFieldMulGroup(self)
-
-    def element(self, value: Union[int, "FFElement"]) -> "FFElement":
-        if isinstance(value, FFElement):
-            if value.field is not self:
-                raise ValueError("Cannot mix elements from different fields")
-            return value
-        if not isinstance(value, int):
-            raise TypeError("Finite field elements must be constructed from int")
-        return FFElement(self, value % self.p)
-
-    def __call__(self, value: Union[int, "FFElement"]) -> "FFElement":
-        return self.element(value)
-
-    @property
-    def zero(self) -> "FFElement":
-        return self.element(0)
-
-    @property
-    def one(self) -> "FFElement":
-        return self.element(1)
-
-    @property
-    def elements(self) -> List["FFElement"]:
-        return [self.element(i) for i in range(self.p)]
-
-    @property
-    def nonzero_elements(self) -> List["FFElement"]:
-        return [self.element(i) for i in range(1, self.p)]
-
-    @property
-    def add_group(self) -> "FiniteFieldAddGroup":
-        return self._add_group
-
-    @property
-    def mul_group(self) -> "FiniteFieldMulGroup":
-        return self._mul_group
+    def __eq__(self, other: Any) -> bool:
+        return isinstance(other, FiniteField) and self.p == other.p
 
     def __repr__(self) -> str:
         return f"GF({self.p})"
 
-    def element(self, value: Union[int, "FFElement"]) -> "FFElement":
-        if isinstance(value, FFElement):
-            if value.field is not self:
-                raise ValueError("Cannot mix elements from different fields")
-            return value
-        if not isinstance(value, int):
-            raise TypeError("Finite field elements must be constructed from int")
-        return FFElement(self, value % self.p)
 
-    def __call__(self, value: Union[int, "FFElement"]) -> "FFElement":
-        return self.element(value)
+# =========================
+# Group wrappers (like field_rational.py idea)
+# =========================
 
-    @property
-    def zero(self) -> "FFElement":
-        return self.element(0)
-
-    @property
-    def one(self) -> "FFElement":
-        return self.element(1)
-
-    def elements(self) -> List["FFElement"]:
-        return [self.element(i) for i in range(self.p)]
-
-    def nonzero_elements(self) -> List["FFElement"]:
-        return [self.element(i) for i in range(1, self.p)]
-
-    @property
-    def add_group(self) -> "FiniteFieldAddGroup":
-        return self._add_group
-
-    @property
-    def mul_group(self) -> "FiniteFieldMulGroup":
-        return self._mul_group
-
-    @property
-    def zero(self) -> "FFElement":
-        return self.element(0)
-
-    @property
-    def one(self) -> "FFElement":
-        return self.element(1)
-
-    def elements(self) -> List["FFElement"]:
-        return [self.element(i) for i in range(self.p)]
-
-    def nonzero_elements(self) -> List["FFElement"]:
-        return [self.element(i) for i in range(1, self.p)]
-
-    @property
-    def add_group(self) -> "FiniteFieldAddGroup":
-        return self._add_group
-
-    @property
-    def mul_group(self) -> "FiniteFieldMulGroup":
-        return self._mul_group
-
-    def __repr__(self) -> str:
-        return f"F_{self.p}"
-
-
-@dataclass(frozen=True)
-class FFElement:
-    field: FiniteField
-    value: int
-
-    def _coerce(self, other: Union[int, "FFElement"]) -> "FFElement":
-        return self.field.element(other)
-
-    def __int__(self) -> int:
-        return self.value
-
-    def __repr__(self) -> str:
-        return f"{self.value} (mod {self.field.p})"
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, (FFElement, int)):
-            return False
-        try:
-            o = self._coerce(other)  
-        except Exception:
-            return False
-        return self.value == o.value and self.field is o.field
-
-    def __hash__(self) -> int:
-        return hash((id(self.field), self.value))
-
-
-@dataclass(frozen=True)
-class FFElement:
-    field: FiniteField
-    value: int
-
-    def _coerce(self, other: Union[int, "FFElement"]) -> "FFElement":
-        return self.field.element(other)
-
-    def __int__(self) -> int:
-        return self.value
-
-    def __repr__(self) -> str:
-        return f"{self.value} (mod {self.field.p})"
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, FFElement):
-            return False
-        return self.field is other.field and self.value == other.value
-
-    def __hash__(self) -> int:
-        return hash((id(self.field), self.value))
-
-    def __neg__(self) -> "FFElement":
-        return FFElement(self.field, (-self.value) % self.field.p)
-
-    def __add__(self, other: Union[int, "FFElement"]) -> "FFElement":
-        o = self._coerce(other)
-        return FFElement(self.field, (self.value + o.value) % self.field.p)
-
-    def __radd__(self, other: Union[int, "FFElement"]) -> "FFElement":
-        return self.__add__(other)
-
-    def __sub__(self, other: Union[int, "FFElement"]) -> "FFElement":
-        o = self._coerce(other)
-        return FFElement(self.field, (self.value - o.value) % self.field.p)
-
-    def __rsub__(self, other: Union[int, "FFElement"]) -> "FFElement":
-        o = self._coerce(other)
-        return FFElement(self.field, (o.value - self.value) % self.field.p)
-
-    def __sub__(self, other: Union[int, "FFElement"]) -> "FFElement":
-        o = self._coerce(other)
-        return FFElement(self.field, (self.value - o.value) % self.field.p)
-
-    def __rsub__(self, other: Union[int, "FFElement"]) -> "FFElement":
-        o = self._coerce(other)
-        return FFElement(self.field, (o.value - self.value) % self.field.p)
-
-    def __mul__(self, other: Union[int, "FFElement"]) -> "FFElement":
-        o = self._coerce(other)
-        return FFElement(self.field, (self.value * o.value) % self.field.p)
-
-    def __rmul__(self, other: Union[int, "FFElement"]) -> "FFElement":
-        return self.__mul__(other)
-
-    def inverse(self) -> "FFElement":
-        if self.value == 0:
-            raise ZeroDivisionError("0 has no multiplicative inverse")
-        inv = pow(self.value, self.field.p - 2, self.field.p)
-        return FFElement(self.field, inv)
-
-    def __truediv__(self, other: Union[int, "FFElement"]) -> "FFElement":
-        o = self._coerce(other)
-        return self * o.inverse()
-
-    def __rtruediv__(self, other: Union[int, "FFElement"]) -> "FFElement":
-        o = self._coerce(other)
-        return o * self.inverse()
-
-    def __pow__(self, n: int) -> "FFElement":
-        if not isinstance(n, int):
-            raise TypeError("exponent must be int")
-        return FFElement(self.field, pow(self.value, n, self.field.p))
-
-    def inverse(self) -> "FFElement":
-        if self.value == 0:
-            raise ZeroDivisionError("0 has no multiplicative inverse")
-        return FFElement(self.field, pow(self.value, self.field.p - 2, self.field.p))
-
-    def __truediv__(self, other: Union[int, "FFElement"]) -> "FFElement":
-        o = self._coerce(other)
-        return self * o.inverse()
-
-    def __rtruediv__(self, other: Union[int, "FFElement"]) -> "FFElement":
-        o = self._coerce(other)
-        return o * self.inverse()
-
-    def __pow__(self, n: int) -> "FFElement":
-        if not isinstance(n, int):
-            raise TypeError("Exponent must be int")
-        return FFElement(self.field, pow(self.value, n, self.field.p))
-
-    def __rtruediv__(self, other: Union[int, "FFElement"]) -> "FFElement":
-        o = self._coerce(other)
-        return o * self.inverse()
-
-    def __pow__(self, n: int) -> "FFElement":
-        if not isinstance(n, int):
-            raise TypeError("Exponent must be int")
-        if n < 0:
-            return (self.inverse()) ** (-n)
-        return FFElement(self.field, pow(self.value, n, self.field.p))
-
-
-class _BaseGroup:
-    """Tiny adapter for common group-axiom checker conventions."""
-
-    def __iter__(self) -> Iterator[FFElement]:
-        return iter(self.elements)
-
-    @property
-    def elems(self) -> List[FFElement]:
-        return list(self.elements)
-
-    def identity(self) -> FFElement:
-        return self.e()
-
-    def inverse(self, a: FFElement) -> FFElement:
-        return self.inv(a)
-
-
-class FiniteFieldAddGroup(_BaseGroup):
+class FiniteFieldAddGroup:
+    """(F, +) over GF(p)"""
     def __init__(self, field: FiniteField):
         self.field = field
-        self.elements: List[FFElement] = field.elements()
 
-    def op(self, a: FFElement, b: FFElement) -> FFElement:
+    def elements(self) -> List[FieldElement]:
+        return self.field.elements()
+
+    def op(self, a: FieldElement, b: FieldElement) -> FieldElement:
         return a + b
 
-    def e(self) -> FFElement:
-        return self.field.zero
+    def identity(self) -> FieldElement:
+        return self.field.zero()
 
-    def inv(self, a: FFElement) -> FFElement:
+    def inv(self, a: FieldElement) -> FieldElement:
         return -a
 
+    def eq(self, a: FieldElement, b: FieldElement) -> bool:
+        return a == b
 
-class FiniteFieldMulGroup(_BaseGroup):
+
+class FiniteFieldMulGroup:
+    """(F\\{0}, *) over GF(p)"""
     def __init__(self, field: FiniteField):
         self.field = field
-        self.elements: List[FFElement] = field.nonzero_elements()
 
-    def op(self, a: FFElement, b: FFElement) -> FFElement:
+    def elements(self) -> List[FieldElement]:
+        return self.field.nonzero_elements()
+
+    def op(self, a: FieldElement, b: FieldElement) -> FieldElement:
         return a * b
 
-    def e(self) -> FFElement:
-        return self.field.one
+    def identity(self) -> FieldElement:
+        return self.field.one()
 
-    def inv(self, a: FFElement) -> FFElement:
-        return a.inverse()
+    def inv(self, a: FieldElement) -> FieldElement:
+        return a.inv()
 
-
-if __name__ == "__main__":
-    F7 = FiniteField(7)
-    a = F7(3)
-    b = F7(5)
-    print("Field:", F7)
-    print("a, b:", a, b)
-    print("a + b =", a + b)
-    print("a - b =", a - b)
-    print("a * b =", a * b)
-    print("a / b =", a / b)
-    print("b**3 =", b ** 3)
-
-    G_add = F7.add_group
-    G_mul = F7.mul_group
-    print("|Add group| =", len(G_add.elements))
-    print("|Mul group| =", len(G_mul.elements))
-    print("Add identity:", G_add.e())
-    print("Mul identity:", G_mul.e())
-    print("Add inverse of a:", G_add.inv(a))
-    print("Mul inverse of a:", G_mul.inv(a))
-
-class _BaseGroup:
-    """Tiny adapter for common group-axiom checker conventions."""
-
-    def __iter__(self) -> Iterator[FFElement]:
-        return iter(self.elements)
-
-    @property
-    def elems(self) -> List[FFElement]:
-        return list(self.elements)
-
-    def identity(self) -> FFElement:
-        return self.e()
-
-    def inverse(self, a: FFElement) -> FFElement:
-        return self.inv(a)
+    def eq(self, a: FieldElement, b: FieldElement) -> bool:
+        return a == b
 
 
-class _BaseGroup:
-    """Tiny adapter for common group-axiom checker conventions."""
+# =========================
+# group_axioms.py (checker)
+# =========================
 
-    def __iter__(self) -> Iterator[FFElement]:
-        return iter(self.elements)
+def check_group(
+    G,
+    *,
+    check_commutative: bool = False,
+    verbose: bool = True
+) -> bool:
+    """
+    Check group axioms on a finite set:
+    - closure
+    - associativity
+    - identity
+    - inverse
+    optionally commutative
+    """
+    elems = G.elements()
+    e = G.identity()
 
-    @property
-    def elems(self) -> List[FFElement]:
-        return list(self.elements)
+    # closure
+    for a in elems:
+        for b in elems:
+            c = G.op(a, b)
+            if c not in elems:
+                if verbose:
+                    print("[FAIL] closure:", a, b, "->", c, "not in elements")
+                return False
 
-    def identity(self) -> FFElement:
-        return self.e()
+    # associativity
+    for a in elems:
+        for b in elems:
+            for c in elems:
+                left = G.op(G.op(a, b), c)
+                right = G.op(a, G.op(b, c))
+                if not G.eq(left, right):
+                    if verbose:
+                        print("[FAIL] associativity:", a, b, c, left, right)
+                    return False
+
+    # identity
+    for a in elems:
+        if not G.eq(G.op(a, e), a) or not G.eq(G.op(e, a), a):
+            if verbose:
+                print("[FAIL] identity:", a, "with e =", e)
+            return False
+
+    # inverse
+    for a in elems:
+        inva = G.inv(a)
+        if not G.eq(G.op(a, inva), e) or not G.eq(G.op(inva, a), e):
+            if verbose:
+                print("[FAIL] inverse:", a, "inv =", inva, "e =", e)
+            return False
+
+    # commutative (abelian)
+    if check_commutative:
+        for a in elems:
+            for b in elems:
+                if not G.eq(G.op(a, b), G.op(b, a)):
+                    if verbose:
+                        print("[FAIL] commutative:", a, b)
+                    return False
+
+    if verbose:
+        print("[OK] group axioms passed.")
+    return True
 
 
-class FiniteFieldAddGroup(_BaseGroup):
-    def __init__(self, field: FiniteField):
-        self.field = field
-        self.elements = field.elements()
+# =========================
+# field_axioms.py (checker)
+# =========================
 
-    def op(self, a: FFElement, b: FFElement) -> FFElement:
-        return a + b
+def check_distributivity(field: FiniteField, verbose: bool = True) -> bool:
+    """
+    Verify distributive law:
+    a*(b+c) = a*b + a*c
+    and (a+b)*c = a*c + b*c (both sides, though one implies other with commutativity of +)
+    """
+    elems = field.elements()
 
-    def e(self) -> FFElement:
-        return self.field.zero
+    for a in elems:
+        for b in elems:
+            for c in elems:
+                left1 = a * (b + c)
+                right1 = (a * b) + (a * c)
+                if left1 != right1:
+                    if verbose:
+                        print("[FAIL] distributivity a*(b+c):", a, b, c, left1, right1)
+                    return False
 
-    def inv(self, a: FFElement) -> FFElement:
-        return -a
+                left2 = (a + b) * c
+                right2 = (a * c) + (b * c)
+                if left2 != right2:
+                    if verbose:
+                        print("[FAIL] distributivity (a+b)*c:", a, b, c, left2, right2)
+                    return False
+
+    if verbose:
+        print("[OK] distributivity passed.")
+    return True
 
 
-class FiniteFieldMulGroup(_BaseGroup):
-    def __init__(self, field: FiniteField):
-        self.field = field
-        self.elements = field.nonzero_elements()
+# =========================
+# Demo
+# =========================
 
-    def op(self, a: FFElement, b: FFElement) -> FFElement:
-        return a * b
+def demo():
+    F = FiniteField(7)          # GF(7)
+    addG = FiniteFieldAddGroup(F)
+    mulG = FiniteFieldMulGroup(F)
 
-    def e(self) -> FFElement:
-        return self.field.one
+    print("Field:", F)
+    print("Elements:", F.elements())
+    print()
 
-    def inv(self, a: FFElement) -> FFElement:
-        return a.inverse()
+    # group checks
+    print("Check additive group (should be abelian):")
+    check_group(addG, check_commutative=True, verbose=True)
+    print()
 
+    print("Check multiplicative group (nonzero elements):")
+    check_group(mulG, check_commutative=True, verbose=True)
+    print()
 
-def demo() -> None:
-    F7 = FiniteField(7)
-    a = F7(3)
-    b = F7(5)
+    # field distributivity check
+    print("Check distributivity:")
+    check_distributivity(F, verbose=True)
+    print()
 
-    print("Field:", F7)
-    print("a =", a)
-    print("b =", b)
-    print("a + b =", a + b)
-    print("a - b =", a - b)
-    print("a * b =", a * b)
-    print("a / b =", a / b)
-    print("b ** 4 =", b ** 4)
+    # operator overloading usage
+    a = F(3)
+    b = F(5)
+    c = F(0)
+    print("a =", a, "b =", b, "c =", c)
+    print("a + b =", a + b)         # 3+5=8 mod7=1
+    print("a - b =", a - b)         # 3-5=-2 mod7=5
+    print("a * b =", a * b)         # 15 mod7=1
+    print("b / a =", b / a)         # 5 * inv(3) mod7, inv(3)=5 since 3*5=15=1 mod7 -> 5*5=25=4
+    print("b / a =", b / a)
+    print("a == 3 ?", a == 3)
+    print("a == 10 ?", a == 10)     # 10 mod7 = 3 -> True
 
-    Gadd = F7.add_group
-    Gmul = F7.mul_group
-    print("Additive identity:", Gadd.e())
-    print("Additive inverse of a:", Gadd.inv(a))
-    print("Multiplicative identity:", Gmul.e())
-    print("Multiplicative inverse of a:", Gmul.inv(a))
+    print("\nTry division by zero:")
+    try:
+        print(a / c)
+    except ZeroDivisionError as e:
+        print("Caught:", e)
 
 
 if __name__ == "__main__":
